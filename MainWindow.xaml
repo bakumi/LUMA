@@ -1,6 +1,11 @@
 <Window x:Class="LUMA.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        d:DesignWidth="760" d:DesignHeight="500"
+        d:Background="#FF121216"
         Title="LUMA"
         Width="760" Height="500"
         MinWidth="760" MinHeight="500"
@@ -16,7 +21,7 @@
         SourceInitialized="Window_SourceInitialized"
         Deactivated="Window_Deactivated"
         Closing="Window_Closing">
-    <Grid Background="#00000000">
+    <Grid Background="#00000000" d:Background="#FF121216">
         <!-- Compact Notch (Idle state at top edge) -->
         <Grid x:Name="CompactNotch" Width="208" Height="19"
               Panel.ZIndex="0"
@@ -29,6 +34,8 @@
         <!-- Dynamically Resizing Island Surface (on top of Compact Notch) -->
         <Grid x:Name="IslandSurface"
               Visibility="Collapsed"
+              d:Visibility="Visible"
+              d:Opacity="1"
               Width="540" Height="320"
               Panel.ZIndex="1"
               HorizontalAlignment="Center" VerticalAlignment="Top"
@@ -37,21 +44,26 @@
               SizeChanged="IslandSurface_SizeChanged"
               SnapsToDevicePixels="True">
             <Grid.RenderTransform>
-                <ScaleTransform x:Name="IslandScale" ScaleX="0.385" ScaleY="0.059" />
+                <ScaleTransform x:Name="IslandScale" ScaleX="0.385" ScaleY="0.059"
+                                d:ScaleX="1" d:ScaleY="1" />
             </Grid.RenderTransform>
 
             <!-- Dynamically calculated Curved Island Contour Path -->
             <Path x:Name="IslandPath"
                   Fill="{StaticResource IslandBackground}"
-                  Stroke="#FF25252A" StrokeThickness="1" />
+                  Stroke="#FF25252A" StrokeThickness="1"
+                  d:Data="M 0,0 C 9.9,0 18,8.1 18,18 L 18,296 C 18,306.8 28.8,320 42,320 L 498,320 C 511.2,320 522,306.8 522,296 L 522,18 C 522,8.1 530.1,0 540,0 Z" />
 
             <!-- Clipped Island Inner Content (Dynamically clipped to the same path geometry) -->
-            <Grid x:Name="IslandClippedContent">
+            <Grid x:Name="IslandClippedContent" d:Clip="{x:Null}">
                 <Grid.Clip>
                     <PathGeometry x:Name="IslandClipGeometry" />
                 </Grid.Clip>
 
-                <Grid x:Name="ExpandedContent" Opacity="0" Visibility="Collapsed" Margin="27,10,27,10">
+                <Grid x:Name="ExpandedContent"
+                      Opacity="0" Visibility="Collapsed"
+                      d:Opacity="1" d:Visibility="Visible"
+                      Margin="27,10,27,10">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" /> <!-- Row 0: Tabs (hidden in standalone Player mode) -->
                         <RowDefinition Height="*" />    <!-- Row 1: Active Tab Panel Content -->

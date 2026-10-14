@@ -181,10 +181,14 @@ public partial class MainWindow : Window
 
     private void Window_Deactivated(object? sender, EventArgs e)
     {
+        // ВРЕМЕННО ДЛЯ ТЕСТОВ: отключено автозакрытие островка при клике вне зоны (потере фокуса).
+        // Островок закрывается только по нажатию Esc (или Ctrl+Shift+Space).
+        /*
         if (_isExpanded)
         {
             CollapseIsland();
         }
+        */
     }
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)

@@ -5,7 +5,6 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d"
         d:DesignWidth="760" d:DesignHeight="500"
-        d:Background="#FF121216"
         Title="LUMA"
         Width="760" Height="500"
         MinWidth="760" MinHeight="500"
@@ -21,21 +20,19 @@
         SourceInitialized="Window_SourceInitialized"
         Deactivated="Window_Deactivated"
         Closing="Window_Closing">
-    <Grid Background="#00000000" d:Background="#FF121216">
+    <Grid Background="#00000000">
         <!-- Compact Notch (Idle state at top edge) -->
         <Grid x:Name="CompactNotch" Width="208" Height="19"
               Panel.ZIndex="0"
               HorizontalAlignment="Center" VerticalAlignment="Top"
               SnapsToDevicePixels="True">
             <Button x:Name="CompactButton" Click="CompactButton_Click"
-                    Style="{StaticResource CompactButtonStyle}" ToolTip="Открыть LUMA" />
+                    Style="{StaticResource CompactButtonStyle}" ToolTip="Открыть LUMA" Background="Blue" />
         </Grid>
 
         <!-- Dynamically Resizing Island Surface (on top of Compact Notch) -->
         <Grid x:Name="IslandSurface"
               Visibility="Collapsed"
-              d:Visibility="Visible"
-              d:Opacity="1"
               Width="540" Height="320"
               Panel.ZIndex="1"
               HorizontalAlignment="Center" VerticalAlignment="Top"
@@ -44,26 +41,21 @@
               SizeChanged="IslandSurface_SizeChanged"
               SnapsToDevicePixels="True">
             <Grid.RenderTransform>
-                <ScaleTransform x:Name="IslandScale" ScaleX="0.385" ScaleY="0.059"
-                                d:ScaleX="1" d:ScaleY="1" />
+                <ScaleTransform x:Name="IslandScale" ScaleX="0.385" ScaleY="0.059" />
             </Grid.RenderTransform>
 
             <!-- Dynamically calculated Curved Island Contour Path -->
             <Path x:Name="IslandPath"
                   Fill="{StaticResource IslandBackground}"
-                  Stroke="#FF25252A" StrokeThickness="1"
-                  d:Data="M 0,0 C 9.9,0 18,8.1 18,18 L 18,296 C 18,306.8 28.8,320 42,320 L 498,320 C 511.2,320 522,306.8 522,296 L 522,18 C 522,8.1 530.1,0 540,0 Z" />
+                  Stroke="#FF25252A" StrokeThickness="1" />
 
             <!-- Clipped Island Inner Content (Dynamically clipped to the same path geometry) -->
-            <Grid x:Name="IslandClippedContent" d:Clip="{x:Null}">
+            <Grid x:Name="IslandClippedContent">
                 <Grid.Clip>
                     <PathGeometry x:Name="IslandClipGeometry" />
                 </Grid.Clip>
 
-                <Grid x:Name="ExpandedContent"
-                      Opacity="0" Visibility="Collapsed"
-                      d:Opacity="1" d:Visibility="Visible"
-                      Margin="27,10,27,10">
+                <Grid x:Name="ExpandedContent" Opacity="0" Visibility="Collapsed" Margin="27,10,27,10">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" /> <!-- Row 0: Tabs (hidden in standalone Player mode) -->
                         <RowDefinition Height="*" />    <!-- Row 1: Active Tab Panel Content -->
@@ -444,8 +436,8 @@
                                 </DockPanel>
 
                                 <!-- Device / Network List Area (smooth scrolling without harsh white scrollbar) -->
-                                <ScrollViewer Grid.Row="1" Height="205" VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Disabled" FocusVisualStyle="{x:Null}">
-                                    <StackPanel x:Name="DetailContentContainer" Margin="2,0" />
+                                <ScrollViewer Grid.Row="1" Height="185" VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Disabled" FocusVisualStyle="{x:Null}">
+                                    <StackPanel x:Name="DetailContentContainer" Margin="2,0,2,10" />
                                 </ScrollViewer>
 
                                 <!-- Bottom Action Button -->
@@ -504,12 +496,12 @@
                                 <!-- Left section: 3 Circular Gauges + 3 Bottom Pills -->
                                 <Grid Grid.Column="0" Margin="0,0,8,0">
                                     <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="*" />
                                         <RowDefinition Height="Auto" />
                                     </Grid.RowDefinitions>
 
                                     <!-- Row 0: 3 Circular Gauge Cards -->
-                                    <UniformGrid Grid.Row="0" Columns="3" Margin="0,0,0,7">
+                                    <UniformGrid Grid.Row="0" Columns="3" Margin="0,0,0,7" VerticalAlignment="Top">
                                         <!-- CPU -->
                                         <Border Background="#FF161619" BorderBrush="#FF252528" BorderThickness="1" CornerRadius="15" Padding="10,12" Margin="0,0,5,0">
                                             <StackPanel HorizontalAlignment="Center">
@@ -564,21 +556,21 @@
                                         </Border>
                                     </UniformGrid>
 
-                                    <!-- Row 1: 3 Mini Horizontal Pills -->
-                                    <UniformGrid Grid.Row="1" Columns="3">
-                                        <Border Background="#FF161619" BorderBrush="#FF252528" BorderThickness="1" CornerRadius="12" Padding="10,6" Margin="0,0,5,0">
+                                    <!-- Row 1: 3 Mini Horizontal Pills (Aligned with bottom of Internet Speed) -->
+                                    <UniformGrid Grid.Row="1" Columns="3" VerticalAlignment="Bottom">
+                                        <Border Background="#FF161619" BorderBrush="#FF252528" BorderThickness="1" CornerRadius="12" Padding="10,8" Margin="0,0,5,0">
                                             <StackPanel>
                                                 <TextBlock Text="DISK C:" Foreground="#FF8E8A93" FontSize="8" FontWeight="Bold" />
                                                 <TextBlock x:Name="DiskQuickText" Text="412 / 931 GB" Foreground="#FFFFFFFF" FontSize="11" FontWeight="Bold" Margin="0,2,0,0" />
                                             </StackPanel>
                                         </Border>
-                                        <Border Background="#FF161619" BorderBrush="#FF252528" BorderThickness="1" CornerRadius="12" Padding="10,6" Margin="0,0,5,0">
+                                        <Border Background="#FF161619" BorderBrush="#FF252528" BorderThickness="1" CornerRadius="12" Padding="10,8" Margin="0,0,5,0">
                                             <StackPanel>
                                                 <TextBlock Text="NETWORK" Foreground="#FF8E8A93" FontSize="8" FontWeight="Bold" />
                                                 <TextBlock x:Name="NetworkQuickText" Text="&#x2193; 1.2 MB/s  &#x2191; 300 KB/s" Foreground="#FFFFFFFF" FontSize="9.5" FontWeight="Bold" Margin="0,2,0,0" />
                                             </StackPanel>
                                         </Border>
-                                        <Border Background="#FF161619" BorderBrush="#FF252528" BorderThickness="1" CornerRadius="12" Padding="10,6">
+                                        <Border Background="#FF161619" BorderBrush="#FF252528" BorderThickness="1" CornerRadius="12" Padding="10,8">
                                             <StackPanel>
                                                 <TextBlock Text="UP FOR" Foreground="#FF8E8A93" FontSize="8" FontWeight="Bold" />
                                                 <TextBlock x:Name="UptimeQuickText" Text="5 h 12 m" Foreground="#FFFFFFFF" FontSize="11" FontWeight="Bold" Margin="0,2,0,0" />
@@ -677,7 +669,7 @@
                                         <TextBlock Grid.Column="0" Text="&#xE721;" FontFamily="Segoe MDL2 Assets" FontSize="12.5" Foreground="#FF8E8A93" VerticalAlignment="Center" Margin="0,0,8,0" />
                                         <Grid Grid.Column="1" VerticalAlignment="Center">
                                             <TextBlock x:Name="SearchPlaceholder" Text="Search apps, files and snippets..." Foreground="#FF8E8A93" FontSize="11" VerticalAlignment="Center" IsHitTestVisible="False" />
-                                            <TextBox x:Name="AppSearchBox" Background="Transparent" BorderThickness="0" Foreground="#FFFFFFFF" FontSize="11" VerticalAlignment="Center" TextChanged="AppSearchBox_TextChanged" KeyDown="AppSearchBox_KeyDown" />
+                                            <TextBox x:Name="AppSearchBox" Background="Transparent" BorderThickness="0" Foreground="#FFFFFFFF" CaretBrush="#FFFFFFFF" FontSize="11" VerticalAlignment="Center" TextChanged="AppSearchBox_TextChanged" KeyDown="AppSearchBox_KeyDown" />
                                         </Grid>
                                         <Border Grid.Column="2" Background="#FF222226" CornerRadius="6" Padding="6,2" VerticalAlignment="Center">
                                             <TextBlock Text="Win+A" Foreground="#FF8E8A93" FontSize="8.5" FontWeight="SemiBold" />
@@ -823,66 +815,57 @@
                                 </Button>
                             </DockPanel>
 
-                            <!-- Carousel Row: 5 Cards with 3D Skew / Perspective -->
+                            <!-- Carousel Row: 5 Cards with elegant harmonious presentation -->
                             <Grid Grid.Row="1" HorizontalAlignment="Center" VerticalAlignment="Center">
                                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
-                                    <!-- Card 0: Far-Left (Skewed -7deg) -->
-                                    <Border x:Name="WallCard0" Width="56" Height="124" Margin="0,0,7,0" CornerRadius="10" Cursor="Hand" ClipToBounds="True" MouseDown="WallCard_MouseDown" Tag="0">
-                                        <Border.RenderTransform>
-                                            <SkewTransform AngleX="-7" />
-                                        </Border.RenderTransform>
+                                    <!-- Card 0: Far-Left Preview -->
+                                    <Border x:Name="WallCard0" Width="72" Height="124" Margin="0,0,7,0" CornerRadius="12" Cursor="Hand" ClipToBounds="True" Opacity="0.55" MouseDown="WallCard_MouseDown" Tag="0">
                                         <Grid>
                                             <Image x:Name="WallImg0" Stretch="UniformToFill" />
-                                            <Border Background="#35000000" />
+                                            <Border Background="#40000000" />
                                         </Grid>
                                     </Border>
 
-                                    <!-- Card 1: Mid-Left (Skewed -7deg) -->
-                                    <Border x:Name="WallCard1" Width="58" Height="128" Margin="0,0,10,0" CornerRadius="10" Cursor="Hand" ClipToBounds="True" MouseDown="WallCard_MouseDown" Tag="1">
-                                        <Border.RenderTransform>
-                                            <SkewTransform AngleX="-7" />
-                                        </Border.RenderTransform>
+                                    <!-- Card 1: Mid-Left Preview -->
+                                    <Border x:Name="WallCard1" Width="82" Height="128" Margin="0,0,9,0" CornerRadius="13" Cursor="Hand" ClipToBounds="True" Opacity="0.75" MouseDown="WallCard_MouseDown" Tag="1">
                                         <Grid>
                                             <Image x:Name="WallImg1" Stretch="UniformToFill" />
-                                            <Border Background="#20000000" />
+                                            <Border Background="#25000000" />
                                         </Grid>
                                     </Border>
 
-                                    <!-- Card 2: Center Active (Straight 0deg, Wide Landscape, Glowing Border) -->
-                                    <Border x:Name="WallCard2" Width="254" Height="136" Margin="0,0,10,0" CornerRadius="14" Cursor="Hand" ClipToBounds="True" BorderBrush="#50FFFFFF" BorderThickness="1.5" MouseDown="WallCard_MouseDown" Tag="2">
-                                        <Border.RenderTransform>
-                                            <SkewTransform AngleX="0" />
-                                        </Border.RenderTransform>
+                                    <!-- Card 2: Center Active (Wide Landscape with Glowing Border & Frosted Bottom Pill) -->
+                                    <Border x:Name="WallCard2" Width="248" Height="136" Margin="0,0,9,0" CornerRadius="15" Cursor="Hand" ClipToBounds="True"
+                                            BorderBrush="#FFFF8E5F" BorderThickness="1.5" MouseDown="WallCard_MouseDown" Tag="2">
                                         <Grid>
                                             <Image x:Name="WallImg2" Stretch="UniformToFill" />
-                                            <Border x:Name="WallActiveIndicator" VerticalAlignment="Bottom" Height="26" Background="#C8121214" CornerRadius="0,0,14,14">
+                                            <Border x:Name="WallActiveIndicator" VerticalAlignment="Bottom" Height="28" Background="#D8111115" CornerRadius="0,0,14,14">
                                                 <DockPanel Margin="10,0" LastChildFill="False">
-                                                    <TextBlock x:Name="WallTitleText" Text="Autumn Dolomites" Foreground="#FFFFFFFF" FontSize="10" FontWeight="SemiBold" VerticalAlignment="Center" DockPanel.Dock="Left" />
-                                                    <TextBlock Text="&#x2713; Active" Foreground="#FFFF8E5F" FontSize="9" FontWeight="Bold" VerticalAlignment="Center" DockPanel.Dock="Right" />
+                                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" DockPanel.Dock="Left">
+                                                        <TextBlock Text="&#xE7B7;" FontFamily="Segoe MDL2 Assets" FontSize="10.5" Foreground="#FFFF8E5F" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                                        <TextBlock x:Name="WallTitleText" Text="Autumn Dolomites" Foreground="#FFFFFFFF" FontSize="10.5" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                                    </StackPanel>
+                                                    <Border x:Name="WallStatusBadge" Background="#35FF8E5F" CornerRadius="6" Padding="6,2" VerticalAlignment="Center" DockPanel.Dock="Right">
+                                                        <TextBlock x:Name="WallStatusText" Text="&#x2713; Active" Foreground="#FFFF8E5F" FontSize="9" FontWeight="Bold" />
+                                                    </Border>
                                                 </DockPanel>
                                             </Border>
                                         </Grid>
                                     </Border>
 
-                                    <!-- Card 3: Mid-Right (Skewed +7deg) -->
-                                    <Border x:Name="WallCard3" Width="58" Height="128" Margin="0,0,7,0" CornerRadius="10" Cursor="Hand" ClipToBounds="True" MouseDown="WallCard_MouseDown" Tag="3">
-                                        <Border.RenderTransform>
-                                            <SkewTransform AngleX="7" />
-                                        </Border.RenderTransform>
+                                    <!-- Card 3: Mid-Right Preview -->
+                                    <Border x:Name="WallCard3" Width="82" Height="128" Margin="0,0,7,0" CornerRadius="13" Cursor="Hand" ClipToBounds="True" Opacity="0.75" MouseDown="WallCard_MouseDown" Tag="3">
                                         <Grid>
                                             <Image x:Name="WallImg3" Stretch="UniformToFill" />
-                                            <Border Background="#20000000" />
+                                            <Border Background="#25000000" />
                                         </Grid>
                                     </Border>
 
-                                    <!-- Card 4: Far-Right (Skewed +7deg) -->
-                                    <Border x:Name="WallCard4" Width="56" Height="124" CornerRadius="10" Cursor="Hand" ClipToBounds="True" MouseDown="WallCard_MouseDown" Tag="4">
-                                        <Border.RenderTransform>
-                                            <SkewTransform AngleX="7" />
-                                        </Border.RenderTransform>
+                                    <!-- Card 4: Far-Right Preview -->
+                                    <Border x:Name="WallCard4" Width="72" Height="124" CornerRadius="12" Cursor="Hand" ClipToBounds="True" Opacity="0.55" MouseDown="WallCard_MouseDown" Tag="4">
                                         <Grid>
                                             <Image x:Name="WallImg4" Stretch="UniformToFill" />
-                                            <Border Background="#35000000" />
+                                            <Border Background="#40000000" />
                                         </Grid>
                                     </Border>
                                 </StackPanel>

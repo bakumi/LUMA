@@ -29,6 +29,7 @@ public static class BluetoothService
     {
         var result = new List<BluetoothDeviceItem>();
         var seenIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var seenNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         // 1. Query via Windows.Devices.Enumeration (WinRT)
         try
@@ -38,7 +39,9 @@ public static class BluetoothService
 
             foreach (var di in devices)
             {
-                if (string.IsNullOrWhiteSpace(di.Name) || !seenIds.Add(di.Id)) continue;
+                if (string.IsNullOrWhiteSpace(di.Name)) continue;
+                var cleanName = di.Name.Trim();
+                if (!seenIds.Add(di.Id) || !seenNames.Add(cleanName)) continue;
 
                 bool isConnected = false;
                 try
@@ -51,8 +54,8 @@ public static class BluetoothService
                 }
                 catch { }
 
-                var (devType, glyph) = CategorizeBluetoothDevice(di.Name);
-                result.Add(new BluetoothDeviceItem(di.Id, di.Name, devType, glyph, isConnected, true));
+                var (devType, glyph) = CategorizeBluetoothDevice(cleanName);
+                result.Add(new BluetoothDeviceItem(di.Id, cleanName, devType, glyph, isConnected, true));
             }
         }
         catch { }
@@ -76,17 +79,20 @@ public static class BluetoothService
                             var friendlyName = instKey?.GetValue("FriendlyName") as string
                                                ?? instKey?.GetValue("DeviceDesc") as string;
 
-                            if (!string.IsNullOrWhiteSpace(friendlyName) &&
-                                !friendlyName.Contains("Enumerator", StringComparison.OrdinalIgnoreCase) &&
-                                !friendlyName.Contains("Protocol", StringComparison.OrdinalIgnoreCase) &&
-                                !friendlyName.Contains("Транспорт", StringComparison.OrdinalIgnoreCase) &&
-                                !friendlyName.Contains("Служба", StringComparison.OrdinalIgnoreCase) &&
-                                seenIds.Add(friendlyName))
+                            if (!string.IsNullOrWhiteSpace(friendlyName))
                             {
-                                var (devType, glyph) = CategorizeBluetoothDevice(friendlyName);
-                                // Check if audio endpoint exists for this device
-                                bool connected = IsAudioEndpointConnected(friendlyName);
-                                result.Add(new BluetoothDeviceItem(instName, friendlyName, devType, glyph, connected, true));
+                                var cleanName = friendlyName.Trim();
+                                if (!cleanName.Contains("Enumerator", StringComparison.OrdinalIgnoreCase) &&
+                                    !cleanName.Contains("Protocol", StringComparison.OrdinalIgnoreCase) &&
+                                    !cleanName.Contains("Транспорт", StringComparison.OrdinalIgnoreCase) &&
+                                    !cleanName.Contains("Служба", StringComparison.OrdinalIgnoreCase) &&
+                                    seenIds.Add(instName) &&
+                                    seenNames.Add(cleanName))
+                                {
+                                    var (devType, glyph) = CategorizeBluetoothDevice(cleanName);
+                                    bool connected = IsAudioEndpointConnected(cleanName);
+                                    result.Add(new BluetoothDeviceItem(instName, cleanName, devType, glyph, connected, true));
+                                }
                             }
                         }
                     }
@@ -95,8 +101,10 @@ public static class BluetoothService
         }
         catch { }
 
-        // Always put connected devices first, then audio devices
+        // Final deduplication by device name (case-insensitive) prioritizing connected status
         return result
+            .GroupBy(d => d.Name.Trim(), StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.OrderByDescending(d => d.IsConnected).First())
             .OrderByDescending(d => d.IsConnected)
             .ThenBy(d => d.DeviceType != "Audio")
             .ThenBy(d => d.Name)

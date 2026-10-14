@@ -890,18 +890,22 @@ public partial class MainWindow : Window
             {
                 var checkBadge = new Border
                 {
-                    Background = new SolidColorBrush(Color.FromRgb(0xFF, 0x8E, 0x5F)),
+                    Width = 20,
+                    Height = 20,
                     CornerRadius = new CornerRadius(10),
-                    Padding = new Thickness(6, 3, 6, 3),
-                    VerticalAlignment = VerticalAlignment.Center
+                    Background = new SolidColorBrush(Color.FromRgb(0xFF, 0x8E, 0x5F)),
+                    VerticalAlignment = VerticalAlignment.Center,
+                    HorizontalAlignment = HorizontalAlignment.Center
                 };
                 var checkIcon = new TextBlock
                 {
                     Text = "\uE73E",
                     FontFamily = new FontFamily("Segoe MDL2 Assets"),
-                    FontSize = 10,
+                    FontSize = 9.5,
                     Foreground = new SolidColorBrush(Color.FromRgb(0x24, 0x12, 0x0A)),
-                    FontWeight = FontWeights.Bold
+                    FontWeight = FontWeights.Bold,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center
                 };
                 checkBadge.Child = checkIcon;
                 Grid.SetColumn(checkBadge, 2);
@@ -1916,13 +1920,13 @@ public partial class MainWindow : Window
                 BorderBrush = new SolidColorBrush(Color.FromRgb(0x28, 0x28, 0x2D)),
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(10),
-                Padding = new Thickness(9, 3, 9, 3),
+                Padding = new Thickness(9, 3, 7, 3),
                 Margin = new Thickness(0, 0, 6, 0),
                 Cursor = Cursors.Hand,
                 Tag = tag
             };
 
-            var stack = new StackPanel { Orientation = Orientation.Horizontal };
+            var stack = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
             stack.Children.Add(new TextBlock
             {
                 Text = "\u26A1",
@@ -1940,13 +1944,54 @@ public partial class MainWindow : Window
                 VerticalAlignment = VerticalAlignment.Center
             });
 
+            // Close 'X' button to delete this query
+            var closeBtn = new Border
+            {
+                Width = 14,
+                Height = 14,
+                CornerRadius = new CornerRadius(7),
+                Background = Brushes.Transparent,
+                Margin = new Thickness(6, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+                Cursor = Cursors.Hand,
+                ToolTip = "Удалить запрос"
+            };
+            var closeIcon = new TextBlock
+            {
+                Text = "\uE711",
+                FontFamily = new FontFamily("Segoe MDL2 Assets"),
+                FontSize = 7,
+                Foreground = new SolidColorBrush(Color.FromRgb(0x7A, 0x76, 0x82)),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            closeBtn.Child = closeIcon;
+            closeBtn.MouseEnter += (_, _) =>
+            {
+                closeIcon.Foreground = Brushes.White;
+                closeBtn.Background = new SolidColorBrush(Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF));
+            };
+            closeBtn.MouseLeave += (_, _) =>
+            {
+                closeIcon.Foreground = new SolidColorBrush(Color.FromRgb(0x7A, 0x76, 0x82));
+                closeBtn.Background = Brushes.Transparent;
+            };
+            closeBtn.MouseLeftButtonUp += (s, e) =>
+            {
+                e.Handled = true;
+                _appService.RemoveSearchQuery(tag);
+                RenderQuickTags();
+            };
+            stack.Children.Add(closeBtn);
+
             pill.Child = stack;
 
             pill.MouseEnter += (_, _) => pill.Background = new SolidColorBrush(Color.FromRgb(0x28, 0x28, 0x30));
             pill.MouseLeave += (_, _) => pill.Background = new SolidColorBrush(Color.FromRgb(0x1A, 0x1A, 0x1D));
 
-            pill.MouseDown += (_, _) =>
+            pill.MouseLeftButtonUp += (_, e) =>
             {
+                if (e.ChangedButton != MouseButton.Left) return;
                 AppSearchBox.Text = tag;
                 AppSearchBox.CaretIndex = tag.Length;
                 AppSearchBox.Focus();
@@ -1991,15 +2036,10 @@ public partial class MainWindow : Window
 
         // Default view: Group into STARRED, RECENT, APPLICATIONS
         var allApps = _appService.CachedApps;
-        var recentFiles = _appService.CachedRecent;
+        var recentApps = _appService.CachedRecent;
 
-        // 1. Starred: Running apps or top apps
-        var starred = allApps.Where(a => a.IsOpen).Take(3).ToList();
-        if (starred.Count == 0 && allApps.Count > 0)
-        {
-            starred = allApps.Take(2).ToList();
-        }
-
+        // 1. Starred: ONLY user-favorited apps (by default empty!)
+        var starred = allApps.Where(a => _appService.IsStarred(a.Path)).ToList();
         if (starred.Count > 0)
         {
             AppsListContainer.Children.Add(new TextBlock
@@ -2016,8 +2056,8 @@ public partial class MainWindow : Window
             }
         }
 
-        // 2. Recent Files
-        if (recentFiles.Count > 0)
+        // 2. Recent Apps (Real recent applications)
+        if (recentApps.Count > 0)
         {
             AppsListContainer.Children.Add(new TextBlock
             {
@@ -2025,9 +2065,9 @@ public partial class MainWindow : Window
                 Foreground = (Brush)FindResource("TextSecondary"),
                 FontSize = 8.5,
                 FontWeight = FontWeights.Bold,
-                Margin = new Thickness(4, 8, 0, 4)
+                Margin = new Thickness(4, starred.Count > 0 ? 8 : 2, 0, 4)
             });
-            foreach (var rec in recentFiles.Take(4))
+            foreach (var rec in recentApps.Take(5))
             {
                 AppsListContainer.Children.Add(CreateAppRowElement(rec));
             }
@@ -2133,7 +2173,9 @@ public partial class MainWindow : Window
         Grid.SetColumn(textPanel, 1);
         grid.Children.Add(textPanel);
 
-        // Right Badge
+        // Right Section: Badge + Favorite Star
+        var rightStack = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+
         if (item.IsOpen)
         {
             var openBadge = new Border
@@ -2151,8 +2193,7 @@ public partial class MainWindow : Window
                 FontWeight = FontWeights.Bold
             };
             openBadge.Child = openTxt;
-            Grid.SetColumn(openBadge, 2);
-            grid.Children.Add(openBadge);
+            rightStack.Children.Add(openBadge);
         }
         else if (item.Category == "RECENT")
         {
@@ -2163,9 +2204,55 @@ public partial class MainWindow : Window
                 FontSize = 8.5,
                 VerticalAlignment = VerticalAlignment.Center
             };
-            Grid.SetColumn(recentTxt, 2);
-            grid.Children.Add(recentTxt);
+            rightStack.Children.Add(recentTxt);
         }
+
+        // Favorite Star Button
+        var isStarred = _appService.IsStarred(item.Path);
+        var starBorder = new Border
+        {
+            Width = 22,
+            Height = 22,
+            CornerRadius = new CornerRadius(11),
+            Background = Brushes.Transparent,
+            Margin = new Thickness(6, 0, 0, 0),
+            Cursor = Cursors.Hand,
+            ToolTip = isStarred ? "Удалить из избранного" : "Добавить в избранное"
+        };
+        var starIcon = new TextBlock
+        {
+            Text = isStarred ? "\uE735" : "\uE734",
+            FontFamily = new FontFamily("Segoe MDL2 Assets"),
+            FontSize = 10,
+            Foreground = isStarred
+                ? (Brush)FindResource("AccentOrange")
+                : new SolidColorBrush(Color.FromRgb(0x60, 0x60, 0x68)),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        starBorder.Child = starIcon;
+        starBorder.MouseEnter += (_, _) =>
+        {
+            starIcon.Foreground = (Brush)FindResource("AccentOrange");
+            starBorder.Background = new SolidColorBrush(Color.FromArgb(0x25, 0xFF, 0x8E, 0x5F));
+        };
+        starBorder.MouseLeave += (_, _) =>
+        {
+            starIcon.Foreground = _appService.IsStarred(item.Path)
+                ? (Brush)FindResource("AccentOrange")
+                : new SolidColorBrush(Color.FromRgb(0x60, 0x60, 0x68));
+            starBorder.Background = Brushes.Transparent;
+        };
+        starBorder.MouseLeftButtonUp += (s, e) =>
+        {
+            e.Handled = true;
+            _appService.ToggleStarred(item.Path, item.Name);
+            RenderAppsList();
+        };
+        rightStack.Children.Add(starBorder);
+
+        Grid.SetColumn(rightStack, 2);
+        grid.Children.Add(rightStack);
 
         rowBorder.Child = grid;
 
@@ -2173,12 +2260,14 @@ public partial class MainWindow : Window
         rowBorder.MouseEnter += (_, _) => rowBorder.Background = new SolidColorBrush(Color.FromArgb(0x1F, 0xFF, 0xFF, 0xFF));
         rowBorder.MouseLeave += (_, _) => rowBorder.Background = Brushes.Transparent;
 
-        // Launch on Click
-        rowBorder.MouseDown += (_, _) =>
+        // Launch on LEFT click only (Right-click will NOT open files)
+        rowBorder.MouseLeftButtonUp += (_, e) =>
         {
+            if (e.ChangedButton != MouseButton.Left) return;
             try
             {
                 Process.Start(new ProcessStartInfo(item.Path) { UseShellExecute = true });
+                _appService.RecordRecentApp(item);
                 _appService.AddSearchQuery(item.Name);
                 RenderQuickTags();
                 CollapseIsland();
@@ -2260,6 +2349,14 @@ public partial class MainWindow : Window
         WallImg2.Source = walls[idx2].Image;
         WallCard2.Tag = idx2;
         WallTitleText.Text = walls[idx2].Title;
+        var isCurrentlySet = walls[idx2].IsCurrent;
+        WallStatusText.Text = isCurrentlySet ? "✓ Текущие" : "Применить";
+        WallStatusBadge.Background = isCurrentlySet
+            ? new SolidColorBrush(Color.FromArgb(0x35, 0xFF, 0x8E, 0x5F))
+            : new SolidColorBrush(Color.FromArgb(0x25, 0xFF, 0xFF, 0xFF));
+        WallStatusText.Foreground = isCurrentlySet
+            ? (Brush)FindResource("AccentOrange")
+            : Brushes.White;
 
         WallImg3.Source = walls[idx3].Image;
         WallCard3.Tag = idx3;
@@ -2270,12 +2367,21 @@ public partial class MainWindow : Window
 
     private void WallCard_MouseDown(object sender, MouseButtonEventArgs e)
     {
+        if (e.ChangedButton != MouseButton.Left) return;
         if (sender is FrameworkElement { Tag: int wallIdx })
         {
             _wallpaperService.SelectedIndex = wallIdx;
-            UpdateWallpaperCarouselUI();
             var wall = _wallpaperService.Wallpapers[wallIdx];
             _wallpaperService.ApplyWallpaper(wall.FilePath);
+
+            // Mark this wallpaper as current in-memory
+            for (int i = 0; i < _wallpaperService.Wallpapers.Count; i++)
+            {
+                var w = _wallpaperService.Wallpapers[i];
+                _wallpaperService.Wallpapers[i] = w with { IsCurrent = (i == wallIdx) };
+            }
+
+            UpdateWallpaperCarouselUI();
         }
     }
 
@@ -2283,7 +2389,7 @@ public partial class MainWindow : Window
     {
         SwitchWallpaperTabMode(isFolder: false);
         _wallpaperService.InitializeWallpapers();
-        _wallpaperService.SelectedIndex = 2;
+        _wallpaperService.SelectedIndex = 0;
         UpdateWallpaperCarouselUI();
     }
 

@@ -12,7 +12,8 @@ public record WallpaperItem(
     string Id,
     string Title,
     string FilePath,
-    ImageSource Image
+    ImageSource Image,
+    bool IsCurrent = false
 );
 
 public class WallpaperService
@@ -30,11 +31,35 @@ public class WallpaperService
         "Wallpapers");
 
     public List<WallpaperItem> Wallpapers { get; private set; } = new();
-    public int SelectedIndex { get; set; } = 2; // Center card (index 2) by default
+    public int SelectedIndex { get; set; } = 0; // Default to current wallpaper if available
 
     public WallpaperService()
     {
         InitializeWallpapers();
+    }
+
+    public static string? GetCurrentWindowsWallpaperPath()
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Control Panel\Desktop");
+            var wall = key?.GetValue("Wallpaper") as string;
+            if (!string.IsNullOrEmpty(wall) && File.Exists(wall))
+            {
+                return wall;
+            }
+
+            var transcoded = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                @"Microsoft\Windows\Themes\TranscodedWallpaper");
+            if (File.Exists(transcoded))
+            {
+                return transcoded;
+            }
+        }
+        catch { }
+
+        return null;
     }
 
     public void InitializeWallpapers()
@@ -47,6 +72,18 @@ public class WallpaperService
             }
 
             var items = new List<WallpaperItem>();
+
+            // 1. Detect current Windows wallpaper
+            var currentPath = GetCurrentWindowsWallpaperPath();
+            if (!string.IsNullOrEmpty(currentPath))
+            {
+                var curImg = LoadBitmapNoLock(currentPath);
+                if (curImg != null)
+                {
+                    items.Add(new WallpaperItem("current_wall", "Текущие обои", currentPath, curImg, true));
+                }
+            }
+
             var defFiles = new[]
             {
                 ("wall_1.jpg", "Midnight Peaks", Color.FromRgb(0x12, 0x18, 0x2E), Color.FromRgb(0x28, 0x34, 0x56), Color.FromRgb(0x1B, 0x1E, 0x33)),
@@ -67,10 +104,14 @@ public class WallpaperService
                 }
 
                 var imgSource = LoadBitmapNoLock(fullPath);
-                items.Add(new WallpaperItem($"wall_{i + 1}", title, fullPath, imgSource));
+                if (imgSource != null)
+                {
+                    items.Add(new WallpaperItem($"wall_{i + 1}", title, fullPath, imgSource, false));
+                }
             }
 
             Wallpapers = items;
+            SelectedIndex = 0; // Focus on current wallpaper
         }
         catch
         {

@@ -1,0 +1,1 @@
+{"main-capability":{"identifier":"main-capability","description":"WinIsland window can read native monitoring events and invoke its local commands.","local":true,"windows":["main"],"permissions":["core:default","core:event:allow-listen","core:event:allow-unlisten"]}}

@@ -1,0 +1,20 @@
+[package]
+name = "winisland"
+version = "0.1.0"
+description = "A compact Windows desktop island for system controls and live stats"
+authors = ["WinIsland"]
+edition = "2024"
+
+[lib]
+name = "winisland_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.7.2", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+sysinfo = { version = "0.39.6", default-features = false, features = ["component", "disk", "network", "system"] }
+tauri = { version = "2.12.3", features = [] }
+tauri-plugin-global-shortcut = "2.4.1"
+windows-sys = { version = "0.61.2", features = ["Win32_System_Power", "Win32_System_Shutdown"] }

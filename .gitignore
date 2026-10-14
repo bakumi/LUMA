@@ -1,0 +1,10 @@
+bin/
+obj/
+artifacts/
+.cache/
+*.log
+node_modules/
+dist/
+src-tauri/target/
+.vs/
+*.user

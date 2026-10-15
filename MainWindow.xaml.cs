@@ -61,13 +61,25 @@ public partial class MainWindow : Window
     private bool _isBluetoothOn = false;
     private bool _isNightLightOn = false;
     private bool _isDarkModeOn = true;
+    private readonly DispatcherTimer _quickSettingsSyncTimer = new() { Interval = TimeSpan.FromSeconds(2.5) };
 
-    // Volume Slider State
+    // Volume & Progress Slider State
     private double _volumePercent = 0.28;
     private bool _isDraggingVolume;
+    private long _lastVolumeComTimestamp;
+    private bool _isDraggingProgress;
+    private bool _isDraggingStandaloneProgress;
 
     // Stats State
     private bool _isSortByCpu;
+
+    // Voice Assistant State (Win + Alt)
+    private VoiceAssistantService? _voiceService;
+    private TranscriptionBarWindow? _transcriptionBar;
+    private readonly DispatcherTimer _waveformTimer = new() { Interval = TimeSpan.FromMilliseconds(33) };
+    private float _smoothedVolume;
+    private double _waveformPhase;
+    private bool _isVoiceActive;
 
     private enum PowerAction
     {
@@ -95,6 +107,7 @@ public partial class MainWindow : Window
             _hasWifi = DeviceStatusService.HasWifiAdapter();
             _hasBluetooth = DeviceStatusService.HasBluetoothAdapter();
             _isWifiOn = _hasWifi && DeviceStatusService.IsWifiEnabled();
+            _isBluetoothOn = _hasBluetooth && await BluetoothService.IsRadioOnAsync();
 
             // Load real Master Volume
             try
@@ -111,6 +124,9 @@ public partial class MainWindow : Window
                 _isDarkModeOn = lightTheme is int val && val == 0;
             }
             catch { }
+
+            // Check real Windows Night Light setting
+            _isNightLightOn = GetWindowsNightLightState();
 
             UpdateQuickSettingsUI(animate: false);
 
@@ -134,6 +150,21 @@ public partial class MainWindow : Window
         _metricsTimer.Tick += (_, _) => UpdateMetrics();
         _shutdownTimer.Tick += ShutdownTimer_Tick;
 
+        // Periodic background sync of quick settings state (Bluetooth, Wi-Fi) with OS
+        _quickSettingsSyncTimer.Tick += async (_, _) =>
+        {
+            if (!_isExpanded) return;
+            var isBtOn = await BluetoothService.IsRadioOnAsync();
+            if (isBtOn != _isBluetoothOn)
+            {
+                _isBluetoothOn = isBtOn;
+                UpdateQuickSettingsUI(animate: true);
+                if (_activeDrawer == "bluetooth") await RenderBluetoothDrawerAsync();
+                if (_activeDrawer == "audio") RenderAudioDrawer();
+            }
+        };
+        _quickSettingsSyncTimer.Start();
+
         SetTab("controls");
     }
 
@@ -148,13 +179,71 @@ public partial class MainWindow : Window
         var extendedStyle = GetWindowLongPtr(hwnd, GwlExStyle).ToInt64();
         SetWindowLongPtr(hwnd, GwlExStyle, new IntPtr(extendedStyle | WsExToolWindow));
         KeepAboveOtherWindows();
+
+        // Listen for real-time Windows audio endpoint changes (plugged, unplugged, default switch)
+        AudioService.InitializeNotifications();
+        AudioService.AudioEndpointsChanged += () =>
+        {
+            Dispatcher.InvokeAsync(() =>
+            {
+                UpdateQuickSettingsUI(animate: true);
+                if (_activeDrawer == "audio") RenderAudioDrawer();
+                if (_activeDrawer == "bluetooth") _ = RenderBluetoothDrawerAsync();
+            });
+        };
+
+        // Listen for real-time Windows Bluetooth radio state changes
+        BluetoothService.RadioStateChanged += (isOn) =>
+        {
+            Dispatcher.InvokeAsync(async () =>
+            {
+                _isBluetoothOn = isOn;
+                UpdateQuickSettingsUI(animate: true);
+                if (_activeDrawer == "bluetooth") await RenderBluetoothDrawerAsync();
+                if (_activeDrawer == "audio") RenderAudioDrawer();
+            });
+        };
+        _ = BluetoothService.InitializeRadioAsync();
+
+        // Initialize Win + Alt Voice Assistant & floating transcription bar
+        _waveformTimer.Tick += WaveformTimer_Tick;
+
+        _voiceService = new VoiceAssistantService();
+        _voiceService.StateChanged += isListening =>
+        {
+            Dispatcher.InvokeAsync(() => SetVoiceAssistantActive(isListening));
+        };
+        _voiceService.HypothesisGenerated += text =>
+        {
+            Dispatcher.InvokeAsync(() =>
+            {
+                _transcriptionBar?.SetText(text);
+            });
+        };
+        _voiceService.ResultGenerated += text =>
+        {
+            Dispatcher.InvokeAsync(() =>
+            {
+                _transcriptionBar?.SetText(text);
+            });
+        };
+
+        _transcriptionBar = new TranscriptionBarWindow();
+        _transcriptionBar.InsertRequested += () => _voiceService?.CommitAndStop();
+        _transcriptionBar.CancelRequested += () => _voiceService?.CancelAndStop();
+
+        UpdateCompactNotchGeometry(208, 19);
     }
 
     private void Window_Closing(object? sender, CancelEventArgs e)
     {
         _metricsTimer.Stop();
         _shutdownTimer.Stop();
+        _waveformTimer.Stop();
+        AudioService.StopMicrophoneMonitoring();
         _mediaService?.Dispose();
+        _voiceService?.Dispose();
+        _transcriptionBar?.Close();
         _source?.RemoveHook(WindowMessageHook);
         UnregisterHotKey(new WindowInteropHelper(this).Handle, HotkeyId);
     }
@@ -193,6 +282,22 @@ public partial class MainWindow : Window
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (_voiceService != null && _voiceService.IsListening)
+        {
+            if (e.Key == Key.Enter)
+            {
+                _voiceService.CommitAndStop();
+                e.Handled = true;
+                return;
+            }
+            if (e.Key == Key.Escape)
+            {
+                _voiceService.CancelAndStop();
+                e.Handled = true;
+                return;
+            }
+        }
+
         if (e.Key == Key.Escape)
         {
             if (ConfirmationOverlay.Visibility == Visibility.Visible)
@@ -209,6 +314,213 @@ public partial class MainWindow : Window
     }
 
     private void CompactButton_Click(object sender, RoutedEventArgs e) => ExpandIsland();
+
+    private void VoiceNotch_MouseDown(object sender, MouseButtonEventArgs e)
+    {
+        _voiceService?.CommitAndStop();
+    }
+
+    private void WaveformTimer_Tick(object? sender, EventArgs e)
+    {
+        if (WaveformBarsPanel == null || !_isVoiceActive) return;
+
+        // Instant non-blocking sample from background microphone monitor
+        float rawPeak = AudioService.CurrentMicrophonePeak;
+
+        // Noise floor gate
+        float noiseFloor = 0.012f;
+        float effectivePeak = rawPeak > noiseFloor ? Math.Clamp((rawPeak - noiseFloor) / (0.80f - noiseFloor), 0f, 1f) : 0f;
+
+        // Smooth asymmetric lerp
+        float lerpRate = effectivePeak > _smoothedVolume ? 0.38f : 0.15f;
+        _smoothedVolume += (effectivePeak - _smoothedVolume) * lerpRate;
+        if (_smoothedVolume < 0.003f) _smoothedVolume = 0f;
+
+        _waveformPhase += 0.22;
+
+        const double baselineHeight = 3.5;
+        const double maxExtraHeight = 12.5; // Max height 16px
+
+        Border[] bars = {
+            WaveBar1, WaveBar2, WaveBar3, WaveBar4, WaveBar5,
+            WaveBar6, WaveBar7, WaveBar8, WaveBar9, WaveBar10,
+            WaveBar11, WaveBar12, WaveBar13, WaveBar14, WaveBar15,
+            WaveBar16, WaveBar17, WaveBar18, WaveBar19
+        };
+
+        double vol = _smoothedVolume;
+
+        for (int i = 0; i < bars.Length; i++)
+        {
+            if (bars[i] == null) continue;
+
+            // Gaussian bell-curve envelope centered at index 9 (Bar 10)
+            double distFromCenter = Math.Abs(i - 9);
+            double weight = Math.Exp(-(distFromCenter * distFromCenter) / (2 * 4.4 * 4.4));
+
+            // ChatGPT-style wave harmonic motion
+            double harmonic = 0.82 + 0.18 * Math.Sin(_waveformPhase * 1.5 + i * 0.42);
+
+            // Subtle gentle breathing in resting state (3.1px to 3.9px)
+            double idleRipple = 0.38 * Math.Sin(_waveformPhase * 0.75 + i * 0.32);
+
+            double targetHeight = baselineHeight + idleRipple + (maxExtraHeight * vol * weight * harmonic);
+            bars[i].Height = Math.Clamp(targetHeight, 2.5, 16.5);
+        }
+    }
+
+    private void CompactNotch_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        UpdateCompactNotchGeometry(e.NewSize.Width, e.NewSize.Height);
+    }
+
+    private void UpdateCompactNotchGeometry(double w, double h)
+    {
+        if (w <= 20 || h <= 5 || CompactNotchPath == null) return;
+        const double earR = 8.0;
+        const double bottomR = 6.0;
+
+        var fig = new PathFigure
+        {
+            StartPoint = new Point(0, 0),
+            IsClosed = true,
+            IsFilled = true
+        };
+
+        // 1. Top left concave curve from screen bezel down into notch
+        fig.Segments.Add(new BezierSegment(
+            new Point(4.4, 0),
+            new Point(earR, 3.6),
+            new Point(earR, earR),
+            true));
+
+        // 2. Left vertical straight edge
+        fig.Segments.Add(new LineSegment(new Point(earR, h - bottomR), true));
+
+        // 3. Bottom left convex rounded corner
+        fig.Segments.Add(new BezierSegment(
+            new Point(earR, h - (bottomR * 0.45)),
+            new Point(earR + (bottomR * 0.45), h),
+            new Point(earR + bottomR, h),
+            true));
+
+        // 4. Bottom horizontal edge
+        fig.Segments.Add(new LineSegment(new Point(w - earR - bottomR, h), true));
+
+        // 5. Bottom right convex rounded corner
+        fig.Segments.Add(new BezierSegment(
+            new Point(w - earR - (bottomR * 0.45), h),
+            new Point(w - earR, h - (bottomR * 0.45)),
+            new Point(w - earR, h - bottomR),
+            true));
+
+        // 6. Right vertical straight edge
+        fig.Segments.Add(new LineSegment(new Point(w - earR, earR), true));
+
+        // 7. Top right concave curve up to screen bezel
+        fig.Segments.Add(new BezierSegment(
+            new Point(w - earR, 3.6),
+            new Point(w - 4.4, 0),
+            new Point(w, 0),
+            true));
+
+        var geom = new PathGeometry();
+        geom.Figures.Add(fig);
+        CompactNotchPath.Data = geom;
+    }
+
+    public void SetVoiceAssistantActive(bool active)
+    {
+        _isVoiceActive = active;
+
+        if (active)
+        {
+            if (_isExpanded)
+            {
+                CollapseIsland();
+            }
+
+            _smoothedVolume = 0f;
+            _waveformPhase = 0;
+
+            // Reset bars to short vertical resting bars (3.5px)
+            Border[] bars = {
+                WaveBar1, WaveBar2, WaveBar3, WaveBar4, WaveBar5,
+                WaveBar6, WaveBar7, WaveBar8, WaveBar9, WaveBar10,
+                WaveBar11, WaveBar12, WaveBar13, WaveBar14, WaveBar15,
+                WaveBar16, WaveBar17, WaveBar18, WaveBar19
+            };
+            foreach (var b in bars)
+            {
+                if (b != null) b.Height = 3.5;
+            }
+
+            // Smoothly morph notch dimensions slightly wider & taller on black background (236x24)
+            var wAnim = new DoubleAnimation(CompactNotch.ActualWidth > 0 ? CompactNotch.ActualWidth : 208, 236, TimeSpan.FromMilliseconds(240))
+            {
+                EasingFunction = new QuarticEase { EasingMode = EasingMode.EaseOut }
+            };
+            var hAnim = new DoubleAnimation(CompactNotch.ActualHeight > 0 ? CompactNotch.ActualHeight : 19, 24, TimeSpan.FromMilliseconds(240))
+            {
+                EasingFunction = new QuarticEase { EasingMode = EasingMode.EaseOut }
+            };
+            CompactNotch.BeginAnimation(WidthProperty, wAnim);
+            CompactNotch.BeginAnimation(HeightProperty, hAnim);
+
+            // Seamless cross-fade inside the compact notch
+            var fadeOutBtn = new DoubleAnimation(CompactButton.Opacity, 0, TimeSpan.FromMilliseconds(160))
+            {
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+            };
+            fadeOutBtn.Completed += (_, _) => { CompactButton.Visibility = Visibility.Collapsed; };
+            CompactButton.BeginAnimation(OpacityProperty, fadeOutBtn);
+
+            VoiceNotchContainer.Visibility = Visibility.Visible;
+            var fadeInVoice = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(220))
+            {
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+            };
+            VoiceNotchContainer.BeginAnimation(OpacityProperty, fadeInVoice);
+
+            AudioService.StartMicrophoneMonitoring();
+            _waveformTimer.Start();
+            _transcriptionBar?.ShowAnimated();
+        }
+        else
+        {
+            AudioService.StopMicrophoneMonitoring();
+            _waveformTimer.Stop();
+
+            // Smoothly morph notch dimensions back to default (208x19)
+            var wAnim = new DoubleAnimation(CompactNotch.ActualWidth, NotchWidth, TimeSpan.FromMilliseconds(220))
+            {
+                EasingFunction = new QuarticEase { EasingMode = EasingMode.EaseOut }
+            };
+            var hAnim = new DoubleAnimation(CompactNotch.ActualHeight, NotchHeight, TimeSpan.FromMilliseconds(220))
+            {
+                EasingFunction = new QuarticEase { EasingMode = EasingMode.EaseOut }
+            };
+            CompactNotch.BeginAnimation(WidthProperty, wAnim);
+            CompactNotch.BeginAnimation(HeightProperty, hAnim);
+
+            // Seamless cross-fade back to compact button
+            var fadeOutVoice = new DoubleAnimation(VoiceNotchContainer.Opacity, 0, TimeSpan.FromMilliseconds(160))
+            {
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn }
+            };
+            fadeOutVoice.Completed += (_, _) => { VoiceNotchContainer.Visibility = Visibility.Collapsed; };
+            VoiceNotchContainer.BeginAnimation(OpacityProperty, fadeOutVoice);
+
+            CompactButton.Visibility = Visibility.Visible;
+            var fadeInBtn = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(220))
+            {
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+            };
+            CompactButton.BeginAnimation(OpacityProperty, fadeInBtn);
+
+            _transcriptionBar?.HideAnimated();
+        }
+    }
 
     // =========================================================================
     // DYNAMIC ISLAND GEOMETRY & FLUID RESIZING
@@ -274,6 +586,34 @@ public partial class MainWindow : Window
     // OPEN & CLOSE ANIMATIONS (Seamless morph, zero flash)
     // =========================================================================
 
+    private void ResetControlsToMainView()
+    {
+        _activeDrawer = "";
+
+        // Remove active animation clocks to prevent WPF holding property values (e.g. Opacity=0 or Collapsed)
+        ControlsMainView.BeginAnimation(OpacityProperty, null);
+        ControlsMainView.BeginAnimation(VisibilityProperty, null);
+        if (ControlsMainView.RenderTransform is TranslateTransform ttM)
+        {
+            ttM.BeginAnimation(TranslateTransform.XProperty, null);
+            ttM.X = 0;
+        }
+
+        ControlsDetailView.BeginAnimation(OpacityProperty, null);
+        ControlsDetailView.BeginAnimation(VisibilityProperty, null);
+        if (ControlsDetailView.RenderTransform is TranslateTransform ttD)
+        {
+            ttD.BeginAnimation(TranslateTransform.XProperty, null);
+            ttD.X = 20;
+        }
+
+        ControlsMainView.Visibility = Visibility.Visible;
+        ControlsMainView.Opacity = 1.0;
+
+        ControlsDetailView.Visibility = Visibility.Collapsed;
+        ControlsDetailView.Opacity = 0.0;
+    }
+
     private void ExpandIsland()
     {
         if (_isExpanded)
@@ -284,6 +624,7 @@ public partial class MainWindow : Window
         _isExpanded = true;
         ConfirmationOverlay.Visibility = Visibility.Collapsed;
         KeepAboveOtherWindows();
+        ResetControlsToMainView();
 
         var targetSize = _tabSizes.GetValueOrDefault(_currentTab, new Size(540, 320));
         IslandSurface.Width = targetSize.Width;
@@ -340,16 +681,7 @@ public partial class MainWindow : Window
         _metricsTimer.Stop();
         ConfirmationOverlay.Visibility = Visibility.Collapsed;
 
-        if (!string.IsNullOrEmpty(_activeDrawer))
-        {
-            _activeDrawer = "";
-            ControlsDetailView.Visibility = Visibility.Collapsed;
-            ControlsDetailView.Opacity = 0;
-            ControlsMainView.Visibility = Visibility.Visible;
-            ControlsMainView.Opacity = 1;
-            if (ControlsMainView.RenderTransform is TranslateTransform ttM) ttM.X = 0;
-            if (ControlsDetailView.RenderTransform is TranslateTransform ttD) ttD.X = 20;
-        }
+        ResetControlsToMainView();
 
         // Reveal CompactNotch immediately underneath
         CompactNotch.Visibility = Visibility.Visible;
@@ -480,7 +812,24 @@ public partial class MainWindow : Window
         ControlsDetailView.Visibility = Visibility.Visible;
         ControlsDetailView.Opacity = 1;
         if (ControlsDetailView.RenderTransform is TranslateTransform tt) tt.X = 0;
-        RefreshActiveDrawerAsync().GetAwaiter().GetResult();
+        
+        var frame = new DispatcherFrame();
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var t = await Dispatcher.InvokeAsync(async () =>
+                {
+                    await RefreshActiveDrawerAsync();
+                });
+                await t;
+            }
+            finally
+            {
+                Dispatcher.Invoke(() => frame.Continue = false);
+            }
+        });
+        Dispatcher.PushFrame(frame);
     }
 
     private void SetTab(string tab)
@@ -489,6 +838,8 @@ public partial class MainWindow : Window
         {
             return;
         }
+
+        ResetControlsToMainView();
 
         var oldPanel = GetPanelForTab(_currentTab);
         var newPanel = GetPanelForTab(tab);
@@ -602,15 +953,182 @@ public partial class MainWindow : Window
     // QUICK SETTINGS & IN-ISLAND DRAWER MANAGEMENT
     // =========================================================================
 
-    private void WifiCard_Click(object sender, RoutedEventArgs e)
+    private const string NightLightStateKey = @"Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Current\default$windows.data.bluelightreduction.bluelightreductionstate\windows.data.bluelightreduction.bluelightreductionstate";
+    private const string NightLightSettingsKey = @"Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Current\default$windows.data.bluelightreduction.settings\windows.data.bluelightreduction.settings";
+
+    private static bool GetWindowsNightLightState()
     {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(NightLightStateKey);
+            if (key?.GetValue("Data") is byte[] data)
+            {
+                return data.Length >= 40 && data[18] == 0x15;
+            }
+        }
+        catch { }
+        return false;
+    }
+
+    private static void SetWindowsNightLightState(bool enable)
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(NightLightStateKey);
+            if (key != null)
+            {
+                if (enable)
+                {
+                    byte[]? onData = null;
+                    try
+                    {
+                        using var setKey = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(NightLightSettingsKey);
+                        if (setKey?.GetValue("Data") is byte[] sData && sData.Length >= 40)
+                        {
+                            onData = sData;
+                        }
+                    }
+                    catch { }
+
+                    onData ??= new byte[]
+                    {
+                        0x43, 0x42, 0x01, 0x00, 0x0A, 0x02, 0x01, 0x00, 0x2A, 0x06, 0xD7, 0x81, 0x91, 0xD1, 0x06, 0x2A, 0x2B, 0x0E, 0x15,
+                        0x43, 0x42, 0x01, 0x00, 0xCA, 0x14, 0x0E, 0x15, 0x00, 0xCA, 0x1E, 0x0E, 0x07, 0x00, 0xCA, 0x32, 0x00, 0xCA, 0x3C,
+                        0x00, 0x00, 0x00, 0x00, 0x00
+                    };
+
+                    key.SetValue("Data", onData, Microsoft.Win32.RegistryValueKind.Binary);
+                }
+                else
+                {
+                    byte[] offData = new byte[] { 0x43, 0x42, 0x01, 0x00, 0x0A, 0x02, 0x01, 0x00, 0x2A, 0x2A, 0x00, 0x00, 0x00 };
+                    key.SetValue("Data", offData, Microsoft.Win32.RegistryValueKind.Binary);
+                }
+            }
+        }
+        catch { }
+    }
+
+    private async void WifiToggle_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_hasWifi) return;
+        _isWifiOn = !_isWifiOn;
+        UpdateQuickSettingsUI(animate: true);
+        await DeviceStatusService.ToggleWifiRadioAsync(_isWifiOn);
+    }
+
+    private void WifiDrawer_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_hasWifi) return;
         OpenControlsDrawer("wifi");
     }
 
-    private void BluetoothCard_Click(object sender, RoutedEventArgs e)
+    private void WifiMainBtn_MouseEnter(object sender, MouseEventArgs e)
+    {
+        if (_hasWifi) AnimateLayerOpacity(WifiFullHover, 1.0, true);
+    }
+
+    private void WifiMainBtn_MouseLeave(object sender, MouseEventArgs e)
+    {
+        AnimateLayerOpacity(WifiFullHover, 0.0, true);
+    }
+
+    private void WifiArrowBtn_MouseEnter(object sender, MouseEventArgs e)
+    {
+        if (_hasWifi)
+        {
+            AnimateLayerOpacity(WifiArrowDark, 1.0, true);
+            AnimateLayerOpacity(WifiArrowOrange, 1.0, true);
+        }
+    }
+
+    private void WifiArrowBtn_MouseLeave(object sender, MouseEventArgs e)
+    {
+        AnimateLayerOpacity(WifiArrowDark, 0.55, true);
+        AnimateLayerOpacity(WifiArrowOrange, 0.45, true);
+    }
+
+    private void WifiCard_MouseLeave(object sender, MouseEventArgs e)
+    {
+        AnimateLayerOpacity(WifiFullHover, 0.0, true);
+        AnimateLayerOpacity(WifiArrowDark, 0.55, true);
+        AnimateLayerOpacity(WifiArrowOrange, 0.45, true);
+    }
+
+    private async void BluetoothToggle_Click(object sender, RoutedEventArgs e)
+    {
+        _isBluetoothOn = !_isBluetoothOn;
+        if (!_isBluetoothOn)
+        {
+            AudioService.FallbackToDefaultSpeaker();
+        }
+        UpdateQuickSettingsUI(animate: true);
+        await BluetoothService.ToggleRadioAsync(_isBluetoothOn);
+        if (_isBluetoothOn)
+        {
+            // Auto-refresh when devices (like headphones) connect automatically
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(1500);
+                await Dispatcher.InvokeAsync(async () =>
+                {
+                    UpdateQuickSettingsUI(animate: true);
+                    if (_activeDrawer == "bluetooth") await RenderBluetoothDrawerAsync();
+                    if (_activeDrawer == "audio") RenderAudioDrawer();
+                });
+                await Task.Delay(2000);
+                await Dispatcher.InvokeAsync(async () =>
+                {
+                    UpdateQuickSettingsUI(animate: true);
+                    if (_activeDrawer == "bluetooth") await RenderBluetoothDrawerAsync();
+                    if (_activeDrawer == "audio") RenderAudioDrawer();
+                });
+            });
+        }
+        else
+        {
+            if (_activeDrawer == "bluetooth") await RenderBluetoothDrawerAsync();
+            if (_activeDrawer == "audio") RenderAudioDrawer();
+        }
+    }
+
+    private void BluetoothDrawer_Click(object sender, RoutedEventArgs e)
     {
         OpenControlsDrawer("bluetooth");
     }
+
+    private void BluetoothMainBtn_MouseEnter(object sender, MouseEventArgs e)
+    {
+        AnimateLayerOpacity(BluetoothFullHover, 1.0, true);
+    }
+
+    private void BluetoothMainBtn_MouseLeave(object sender, MouseEventArgs e)
+    {
+        AnimateLayerOpacity(BluetoothFullHover, 0.0, true);
+    }
+
+    private void BluetoothArrowBtn_MouseEnter(object sender, MouseEventArgs e)
+    {
+        AnimateLayerOpacity(BluetoothArrowDark, 1.0, true);
+        AnimateLayerOpacity(BluetoothArrowOrange, 1.0, true);
+    }
+
+    private void BluetoothArrowBtn_MouseLeave(object sender, MouseEventArgs e)
+    {
+        AnimateLayerOpacity(BluetoothArrowDark, 0.55, true);
+        AnimateLayerOpacity(BluetoothArrowOrange, 0.45, true);
+    }
+
+    private void BluetoothCard_MouseLeave(object sender, MouseEventArgs e)
+    {
+        AnimateLayerOpacity(BluetoothFullHover, 0.0, true);
+        AnimateLayerOpacity(BluetoothArrowDark, 0.55, true);
+        AnimateLayerOpacity(BluetoothArrowOrange, 0.45, true);
+    }
+
+    private void WifiCard_Click(object sender, RoutedEventArgs e) => OpenControlsDrawer("wifi");
+
+    private void BluetoothCard_Click(object sender, RoutedEventArgs e) => OpenControlsDrawer("bluetooth");
 
     private void AudioCard_Click(object sender, RoutedEventArgs e)
     {
@@ -620,6 +1138,7 @@ public partial class MainWindow : Window
     private void NightLightCard_Click(object sender, RoutedEventArgs e)
     {
         _isNightLightOn = !_isNightLightOn;
+        SetWindowsNightLightState(_isNightLightOn);
         UpdateQuickSettingsUI(animate: true);
     }
 
@@ -683,6 +1202,7 @@ public partial class MainWindow : Window
 
     private async void OpenControlsDrawer(string drawerType)
     {
+        if (drawerType == "wifi" && !_hasWifi) return;
         _activeDrawer = drawerType;
 
         // Slide out ControlsMainView to left (-20)
@@ -691,7 +1211,13 @@ public partial class MainWindow : Window
             EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn }
         };
         var mainFade = new DoubleAnimation(1, 0, TimeSpan.FromMilliseconds(130));
-        mainFade.Completed += (_, _) => ControlsMainView.Visibility = Visibility.Collapsed;
+        mainFade.Completed += (_, _) =>
+        {
+            if (!string.IsNullOrEmpty(_activeDrawer))
+            {
+                ControlsMainView.Visibility = Visibility.Collapsed;
+            }
+        };
         ControlsMainView.RenderTransform.BeginAnimation(TranslateTransform.XProperty, mainSlide);
         ControlsMainView.BeginAnimation(OpacityProperty, mainFade);
 
@@ -726,7 +1252,17 @@ public partial class MainWindow : Window
             EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn }
         };
         var detailFade = new DoubleAnimation(1, 0, TimeSpan.FromMilliseconds(130));
-        detailFade.Completed += (_, _) => ControlsDetailView.Visibility = Visibility.Collapsed;
+        detailFade.Completed += (_, _) =>
+        {
+            ControlsDetailView.BeginAnimation(OpacityProperty, null);
+            if (ControlsDetailView.RenderTransform is TranslateTransform ttD)
+            {
+                ttD.BeginAnimation(TranslateTransform.XProperty, null);
+                ttD.X = 20;
+            }
+            ControlsDetailView.Visibility = Visibility.Collapsed;
+            ControlsDetailView.Opacity = 0.0;
+        };
         ControlsDetailView.RenderTransform.BeginAnimation(TranslateTransform.XProperty, detailSlide);
         ControlsDetailView.BeginAnimation(OpacityProperty, detailFade);
 
@@ -742,6 +1278,17 @@ public partial class MainWindow : Window
         {
             BeginTime = TimeSpan.FromMilliseconds(70),
             EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+        };
+        mainFade.Completed += (_, _) =>
+        {
+            ControlsMainView.BeginAnimation(OpacityProperty, null);
+            if (ControlsMainView.RenderTransform is TranslateTransform ttM)
+            {
+                ttM.BeginAnimation(TranslateTransform.XProperty, null);
+                ttM.X = 0;
+            }
+            ControlsMainView.Opacity = 1.0;
+            ControlsMainView.Visibility = Visibility.Visible;
         };
         ControlsMainView.RenderTransform.BeginAnimation(TranslateTransform.XProperty, mainSlide);
         ControlsMainView.BeginAnimation(OpacityProperty, mainFade);
@@ -775,7 +1322,7 @@ public partial class MainWindow : Window
         DetailBottomBtnText.Text = "Open Windows Sound Settings";
         DetailContentContainer.Children.Clear();
 
-        var devices = AudioService.GetAudioOutputDevices();
+        var devices = AudioService.GetAudioOutputDevices(_isBluetoothOn);
         if (devices.Count == 0)
         {
             var emptyText = new TextBlock
@@ -866,7 +1413,6 @@ public partial class MainWindow : Window
             var titleText = new TextBlock
             {
                 Text = AudioService.CleanDeviceName(dev.Name),
-                ToolTip = dev.Name,
                 Foreground = Brushes.White,
                 FontSize = 11.5,
                 FontWeight = isDef ? FontWeights.Bold : FontWeights.SemiBold,
@@ -926,8 +1472,9 @@ public partial class MainWindow : Window
                     }
                     catch { }
                     ApplyVolumeToUI();
-                    UpdateQuickSettingsUI();
+                    UpdateQuickSettingsUI(animate: true);
                     RenderAudioDrawer();
+                    if (_activeDrawer == "bluetooth") _ = RenderBluetoothDrawerAsync();
                 }
             };
 
@@ -939,10 +1486,62 @@ public partial class MainWindow : Window
     // BLUETOOTH DEVICES & PAIRING DRAWER
     // =========================================================================
 
+    private static UIElement CreatePulsingDotLoader(Brush dotBrush)
+    {
+        var panel = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Height = 14
+        };
+
+        for (int i = 0; i < 3; i++)
+        {
+            var ellipse = new System.Windows.Shapes.Ellipse
+            {
+                Width = 3.5,
+                Height = 3.5,
+                Fill = dotBrush,
+                Margin = new Thickness(i == 0 ? 0 : 2.5, 0, 0, 0),
+                Opacity = 0.25,
+                RenderTransform = new ScaleTransform(0.7, 0.7),
+                RenderTransformOrigin = new Point(0.5, 0.5)
+            };
+
+            var anim = new DoubleAnimation(0.25, 1.0, TimeSpan.FromMilliseconds(420))
+            {
+                AutoReverse = true,
+                RepeatBehavior = RepeatBehavior.Forever,
+                BeginTime = TimeSpan.FromMilliseconds(i * 130),
+                EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut }
+            };
+            ellipse.BeginAnimation(UIElement.OpacityProperty, anim);
+
+            var scaleAnim = new DoubleAnimation(0.7, 1.3, TimeSpan.FromMilliseconds(420))
+            {
+                AutoReverse = true,
+                RepeatBehavior = RepeatBehavior.Forever,
+                BeginTime = TimeSpan.FromMilliseconds(i * 130),
+                EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut }
+            };
+            ellipse.RenderTransform.BeginAnimation(ScaleTransform.ScaleXProperty, scaleAnim);
+            ellipse.RenderTransform.BeginAnimation(ScaleTransform.ScaleYProperty, scaleAnim);
+
+            panel.Children.Add(ellipse);
+        }
+
+        return panel;
+    }
+
     private async Task RenderBluetoothDrawerAsync()
     {
         DetailTitleText.Text = "Bluetooth Devices";
         DetailBottomBtnText.Text = "Add Device or Open Bluetooth Settings";
+
+        // Query devices in background FIRST before clearing container to eliminate screen flicker
+        var devices = _isBluetoothOn ? await BluetoothService.GetPairedDevicesAsync() : new List<BluetoothDeviceItem>();
+
         DetailContentContainer.Children.Clear();
 
         // 1. Bluetooth Master Power Switch Card
@@ -1038,9 +1637,16 @@ public partial class MainWindow : Window
         {
             var next = !_isBluetoothOn;
             _isBluetoothOn = next;
+            if (!_isBluetoothOn)
+            {
+                AudioService.FallbackToDefaultSpeaker();
+            }
+            toggleBtn.Content = CreatePulsingDotLoader(_isBluetoothOn ? Brushes.White : Brushes.Black);
+            toggleBtn.IsEnabled = false;
             await BluetoothService.ToggleRadioAsync(next);
-            UpdateQuickSettingsUI();
+            UpdateQuickSettingsUI(animate: true);
             await RenderBluetoothDrawerAsync();
+            if (_activeDrawer == "audio") RenderAudioDrawer();
         };
         Grid.SetColumn(toggleBtn, 2);
         powerGrid.Children.Add(toggleBtn);
@@ -1105,7 +1711,6 @@ public partial class MainWindow : Window
         };
         DetailContentContainer.Children.Add(devicesHeader);
 
-        var devices = await BluetoothService.GetPairedDevicesAsync();
         if (devices.Count == 0)
         {
             var noDevCard = new Border
@@ -1215,7 +1820,7 @@ public partial class MainWindow : Window
             Grid.SetColumn(dStack, 1);
             devGrid.Children.Add(dStack);
 
-            // Connect action button
+            // Connect action button with animated pulsing dots on click
             var actionBtn = new Button
             {
                 Content = isConn ? "Connected" : "Connect",
@@ -1235,13 +1840,32 @@ public partial class MainWindow : Window
             actionBtn.Template = btnTemplate;
 
             var curDev = dev;
-            actionBtn.Click += async (s, e) =>
+            async void TriggerConnectOrDisconnect()
             {
-                actionBtn.Content = "...";
+                if (!actionBtn.IsEnabled) return;
+                actionBtn.Content = CreatePulsingDotLoader(curDev.IsConnected ? Brushes.Black : Brushes.White);
                 actionBtn.IsEnabled = false;
-                await BluetoothService.ConnectDeviceAsync(curDev);
-                await Task.Delay(500);
+                if (curDev.IsConnected)
+                {
+                    await BluetoothService.DisconnectDeviceAsync(curDev);
+                }
+                else
+                {
+                    await BluetoothService.ConnectDeviceAsync(curDev);
+                }
+                await Task.Delay(300);
                 await RenderBluetoothDrawerAsync();
+                UpdateQuickSettingsUI(animate: true);
+                if (_activeDrawer == "audio") RenderAudioDrawer();
+            }
+
+            actionBtn.Click += (s, e) => TriggerConnectOrDisconnect();
+            devCard.MouseLeftButtonUp += (s, e) =>
+            {
+                if (e.OriginalSource != actionBtn)
+                {
+                    TriggerConnectOrDisconnect();
+                }
             };
 
             Grid.SetColumn(actionBtn, 2);
@@ -1429,17 +2053,30 @@ public partial class MainWindow : Window
         // 1. Wi-Fi Card
         if (!_hasWifi)
         {
-            WifiCard.IsEnabled = true;
-            WifiCard.Opacity = 0.55;
-            WifiCard.ToolTip = "Wi-Fi адаптер не обнаружен на этом ПК (нажмите для подробностей)";
+            WifiCard.IsEnabled = false;
+            WifiCard.IsHitTestVisible = false;
+            WifiCard.Opacity = 0.40;
+            WifiCard.Cursor = Cursors.Arrow;
+            WifiMainBtn.IsEnabled = false;
+            WifiArrowBtn.IsEnabled = false;
+            WifiMainBtn.Cursor = Cursors.Arrow;
+            WifiArrowBtn.Cursor = Cursors.Arrow;
+            WifiFullHover.Opacity = 0.0;
+            WifiArrowDark.Opacity = 0.55;
+            WifiArrowOrange.Opacity = 0.45;
             WifiSubtitleDark.Text = "Not available";
             AnimateLayerOpacity(WifiOrangeLayer, 0.0, animate);
         }
         else
         {
             WifiCard.IsEnabled = true;
+            WifiCard.IsHitTestVisible = true;
             WifiCard.Opacity = 1.0;
-            WifiCard.ToolTip = null;
+            WifiCard.Cursor = Cursors.Hand;
+            WifiMainBtn.IsEnabled = true;
+            WifiArrowBtn.IsEnabled = true;
+            WifiMainBtn.Cursor = Cursors.Hand;
+            WifiArrowBtn.Cursor = Cursors.Hand;
             WifiSubtitleDark.Text = "Off";
             WifiSubtitleOrange.Text = "Connected";
             AnimateLayerOpacity(WifiOrangeLayer, _isWifiOn ? 1.0 : 0.0, animate);
@@ -1450,7 +2087,6 @@ public partial class MainWindow : Window
         {
             BluetoothCard.IsEnabled = true;
             BluetoothCard.Opacity = 0.55;
-            BluetoothCard.ToolTip = "Bluetooth адаптер не обнаружен на этом ПК (нажмите для подробностей)";
             BluetoothSubtitleDark.Text = "Not available";
             AnimateLayerOpacity(BluetoothOrangeLayer, 0.0, animate);
         }
@@ -1458,18 +2094,18 @@ public partial class MainWindow : Window
         {
             BluetoothCard.IsEnabled = true;
             BluetoothCard.Opacity = 1.0;
-            BluetoothCard.ToolTip = null;
             BluetoothSubtitleDark.Text = "Off";
             BluetoothSubtitleOrange.Text = _isBluetoothOn ? "On" : "Off";
             AnimateLayerOpacity(BluetoothOrangeLayer, _isBluetoothOn ? 1.0 : 0.0, animate);
         }
 
         // 3. Audio Card (Real Windows Audio Output Endpoint)
-        var currentDevice = AudioService.GetCurrentOutputDeviceName();
-        var isHeadphones = currentDevice.Contains("AirPods", StringComparison.OrdinalIgnoreCase) ||
+        var currentDevice = AudioService.GetCurrentOutputDeviceName(_isBluetoothOn);
+        var isHeadphones = _isBluetoothOn && (
+                           currentDevice.Contains("AirPods", StringComparison.OrdinalIgnoreCase) ||
                            currentDevice.Contains("Headphone", StringComparison.OrdinalIgnoreCase) ||
                            currentDevice.Contains("Наушники", StringComparison.OrdinalIgnoreCase) ||
-                           currentDevice.Contains("Earbuds", StringComparison.OrdinalIgnoreCase);
+                           currentDevice.Contains("Earbuds", StringComparison.OrdinalIgnoreCase));
 
         var glyph = isHeadphones ? "\uE7F6" : "\uE767";
         if (AudioIconDark != null) AudioIconDark.Text = glyph;
@@ -1517,14 +2153,14 @@ public partial class MainWindow : Window
     {
         _isDraggingVolume = true;
         VolumeContainer.CaptureMouse();
-        UpdateVolumeFromPoint(e.GetPosition(VolumeContainer));
+        UpdateVolumeFromPoint(e.GetPosition(VolumeContainer), isDragging: true);
     }
 
     private void VolumeContainer_MouseMove(object sender, MouseEventArgs e)
     {
         if (_isDraggingVolume)
         {
-            UpdateVolumeFromPoint(e.GetPosition(VolumeContainer));
+            UpdateVolumeFromPoint(e.GetPosition(VolumeContainer), isDragging: true);
         }
     }
 
@@ -1534,6 +2170,8 @@ public partial class MainWindow : Window
         {
             _isDraggingVolume = false;
             VolumeContainer.ReleaseMouseCapture();
+            // Flush exact final volume to system
+            Task.Run(() => AudioService.SetMasterVolume((float)_volumePercent));
         }
     }
 
@@ -1547,15 +2185,25 @@ public partial class MainWindow : Window
 
     private void VolumeContainer_SizeChanged(object sender, SizeChangedEventArgs e) => ApplyVolumeToUI();
 
-    private void UpdateVolumeFromPoint(Point point)
+    private void UpdateVolumeFromPoint(Point point, bool isDragging = false)
     {
         var totalWidth = VolumeContainer.ActualWidth;
         if (totalWidth <= 0) return;
 
         var fraction = Math.Clamp(point.X / totalWidth, 0.0, 1.0);
         _volumePercent = fraction;
-        AudioService.SetMasterVolume((float)fraction);
-        ApplyVolumeToUI(animate: true);
+
+        // Direct 0ms visual update (no layout thrashing or animation stacking)
+        ApplyVolumeToUI(animate: !isDragging);
+
+        // Throttle COM calls during mouse drag to at most once every 35ms on background thread
+        var now = Stopwatch.GetTimestamp();
+        var elapsedMs = (now - _lastVolumeComTimestamp) * 1000.0 / Stopwatch.Frequency;
+        if (!isDragging || elapsedMs >= 35)
+        {
+            _lastVolumeComTimestamp = now;
+            Task.Run(() => AudioService.SetMasterVolume((float)fraction));
+        }
     }
 
     private void ApplyVolumeToUI(bool animate = false)
@@ -1639,14 +2287,56 @@ public partial class MainWindow : Window
         }
     }
 
-    private async void ProgressTrack_MouseDown(object sender, MouseButtonEventArgs e)
+    private void ProgressTrack_MouseDown(object sender, MouseButtonEventArgs e)
     {
         var totalWidth = ProgressTrackContainer.ActualWidth;
         if (totalWidth <= 0 || _mediaService == null) return;
 
+        _isDraggingProgress = true;
+        ProgressTrackContainer.CaptureMouse();
+
         var p = e.GetPosition(ProgressTrackContainer);
-        var fraction = Math.Clamp(p.X / totalWidth, 0.0, 1.0);
-        await _mediaService.SeekAsync(fraction * _mediaService.CurrentState.TotalSeconds);
+        UpdateProgressVisuals(p.X, totalWidth);
+    }
+
+    private void ProgressTrack_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (_isDraggingProgress && _mediaService != null)
+        {
+            var totalWidth = ProgressTrackContainer.ActualWidth;
+            if (totalWidth <= 0) return;
+
+            var p = e.GetPosition(ProgressTrackContainer);
+            UpdateProgressVisuals(p.X, totalWidth);
+        }
+    }
+
+    private async void ProgressTrack_MouseUp(object sender, MouseButtonEventArgs e)
+    {
+        if (_isDraggingProgress)
+        {
+            _isDraggingProgress = false;
+            ProgressTrackContainer.ReleaseMouseCapture();
+
+            if (_mediaService != null && ProgressTrackContainer.ActualWidth > 0)
+            {
+                var p = e.GetPosition(ProgressTrackContainer);
+                var fraction = Math.Clamp(p.X / ProgressTrackContainer.ActualWidth, 0.0, 1.0);
+                await _mediaService.SeekAsync(fraction * _mediaService.CurrentState.TotalSeconds);
+            }
+        }
+    }
+
+    private void UpdateProgressVisuals(double mouseX, double totalWidth)
+    {
+        if (_mediaService == null) return;
+        var fraction = Math.Clamp(mouseX / totalWidth, 0.0, 1.0);
+        var fillW = Math.Max(0, totalWidth * fraction);
+        ProgressFill.Width = fillW;
+        ProgressScrubber.Margin = new Thickness(Math.Max(0, fillW - 4), 0, 0, 0);
+
+        var seconds = (int)(fraction * _mediaService.CurrentState.TotalSeconds);
+        CurrentTimeText.Text = FormatTime(seconds);
     }
 
     private void ProgressTrack_SizeChanged(object sender, SizeChangedEventArgs e)
@@ -1657,14 +2347,56 @@ public partial class MainWindow : Window
         }
     }
 
-    private async void StandaloneProgress_MouseDown(object sender, MouseButtonEventArgs e)
+    private void StandaloneProgress_MouseDown(object sender, MouseButtonEventArgs e)
     {
         var totalWidth = StandaloneProgressContainer.ActualWidth;
         if (totalWidth <= 0 || _mediaService == null) return;
 
+        _isDraggingStandaloneProgress = true;
+        StandaloneProgressContainer.CaptureMouse();
+
         var p = e.GetPosition(StandaloneProgressContainer);
-        var fraction = Math.Clamp(p.X / totalWidth, 0.0, 1.0);
-        await _mediaService.SeekAsync(fraction * _mediaService.CurrentState.TotalSeconds);
+        UpdateStandaloneProgressVisuals(p.X, totalWidth);
+    }
+
+    private void StandaloneProgress_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (_isDraggingStandaloneProgress && _mediaService != null)
+        {
+            var totalWidth = StandaloneProgressContainer.ActualWidth;
+            if (totalWidth <= 0) return;
+
+            var p = e.GetPosition(StandaloneProgressContainer);
+            UpdateStandaloneProgressVisuals(p.X, totalWidth);
+        }
+    }
+
+    private async void StandaloneProgress_MouseUp(object sender, MouseButtonEventArgs e)
+    {
+        if (_isDraggingStandaloneProgress)
+        {
+            _isDraggingStandaloneProgress = false;
+            StandaloneProgressContainer.ReleaseMouseCapture();
+
+            if (_mediaService != null && StandaloneProgressContainer.ActualWidth > 0)
+            {
+                var p = e.GetPosition(StandaloneProgressContainer);
+                var fraction = Math.Clamp(p.X / StandaloneProgressContainer.ActualWidth, 0.0, 1.0);
+                await _mediaService.SeekAsync(fraction * _mediaService.CurrentState.TotalSeconds);
+            }
+        }
+    }
+
+    private void UpdateStandaloneProgressVisuals(double mouseX, double totalWidth)
+    {
+        if (_mediaService == null) return;
+        var fraction = Math.Clamp(mouseX / totalWidth, 0.0, 1.0);
+        var fillW = Math.Max(0, totalWidth * fraction);
+        StandaloneProgressFill.Width = fillW;
+        StandaloneProgressScrubber.Margin = new Thickness(Math.Max(0, fillW - 3), 0, 0, 0);
+
+        var seconds = (int)(fraction * _mediaService.CurrentState.TotalSeconds);
+        StandaloneCurrentTime.Text = FormatTime(seconds);
     }
 
     private void StandaloneProgress_SizeChanged(object sender, SizeChangedEventArgs e)
@@ -1684,8 +2416,14 @@ public partial class MainWindow : Window
 
         var curFormatted = FormatTime((int)state.CurrentSeconds);
         var totalFormatted = FormatTime((int)state.TotalSeconds);
-        CurrentTimeText.Text = curFormatted;
-        StandaloneCurrentTime.Text = curFormatted;
+        if (!_isDraggingProgress)
+        {
+            CurrentTimeText.Text = curFormatted;
+        }
+        if (!_isDraggingStandaloneProgress)
+        {
+            StandaloneCurrentTime.Text = curFormatted;
+        }
         TotalTimeText.Text = totalFormatted;
         StandaloneTotalTime.Text = totalFormatted;
 
@@ -1712,7 +2450,7 @@ public partial class MainWindow : Window
         // Smoothly update progress scrubber and fill with 50ms gliding interpolation
         var progressFraction = state.TotalSeconds > 0 ? Math.Clamp(state.CurrentSeconds / state.TotalSeconds, 0.0, 1.0) : 0.0;
         var trackWidth = ProgressTrackContainer.ActualWidth;
-        if (trackWidth > 0)
+        if (trackWidth > 0 && !_isDraggingProgress)
         {
             var fillW = Math.Max(0, trackWidth * progressFraction);
             ProgressFill.Width = fillW;
@@ -1720,7 +2458,7 @@ public partial class MainWindow : Window
         }
 
         var standaloneWidth = StandaloneProgressContainer.ActualWidth;
-        if (standaloneWidth > 0)
+        if (standaloneWidth > 0 && !_isDraggingStandaloneProgress)
         {
             var fillW = Math.Max(0, standaloneWidth * progressFraction);
             StandaloneProgressFill.Width = fillW;
@@ -1954,7 +2692,6 @@ public partial class MainWindow : Window
                 Margin = new Thickness(6, 0, 0, 0),
                 VerticalAlignment = VerticalAlignment.Center,
                 Cursor = Cursors.Hand,
-                ToolTip = "Удалить запрос"
             };
             var closeIcon = new TextBlock
             {
@@ -2217,7 +2954,6 @@ public partial class MainWindow : Window
             Background = Brushes.Transparent,
             Margin = new Thickness(6, 0, 0, 0),
             Cursor = Cursors.Hand,
-            ToolTip = isStarred ? "Удалить из избранного" : "Добавить в избранное"
         };
         var starIcon = new TextBlock
         {
@@ -2455,20 +3191,36 @@ public partial class MainWindow : Window
             return;
         }
 
-        _pendingAction = action;
-        var (title, message, icon, buttonText) = action switch
+        try
         {
-            PowerAction.Lock => ("Заблокировать компьютер?", "Текущий сеанс Windows будет заблокирован.", "\uE72E", "Заблокировать"),
-            PowerAction.Sleep => ("Перевести в режим сна?", "Открытые приложения останутся в текущем состоянии.", "\uE708", "Перейти в сон"),
-            PowerAction.Restart => ("Перезапустить компьютер?", "Перезапуск начнётся через 15 секунд. Его можно отменить.", "\uE72C", "Перезапустить"),
-            _ => ("Выключить компьютер?", "Выключение начнётся через 15 секунд. Его можно отменить.", "\uE7E8", "Выключить")
-        };
+            switch (action)
+            {
+                case PowerAction.Lock:
+                    LockWorkStation();
+                    break;
+                case PowerAction.Sleep:
+                    SetSuspendState(false, false, false);
+                    break;
+                case PowerAction.Restart:
+                case PowerAction.Shutdown:
+                    ExecutePowerAction(action);
+                    break;
+            }
+        }
+        catch (Win32Exception) { }
+    }
 
-        ConfirmationTitle.Text = title;
-        ConfirmationMessage.Text = message;
-        ConfirmActionButton.Content = buttonText;
-        ConfirmationIcon.Text = icon;
-        ConfirmationOverlay.Visibility = Visibility.Visible;
+    private static void ExecutePowerAction(PowerAction action)
+    {
+        var process = new ProcessStartInfo("shutdown.exe")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        process.ArgumentList.Add(action == PowerAction.Restart ? "/r" : "/s");
+        process.ArgumentList.Add("/t");
+        process.ArgumentList.Add("0");
+        Process.Start(process);
     }
 
     private void DismissConfirmation_Click(object sender, RoutedEventArgs e)

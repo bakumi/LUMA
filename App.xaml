@@ -3,10 +3,10 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              StartupUri="MainWindow.xaml">
     <Application.Resources>
-        <SolidColorBrush x:Key="IslandBackground" Color="#FF0B0B0E" />
-        <SolidColorBrush x:Key="CardBackground" Color="#FF111114" />
-        <SolidColorBrush x:Key="CardHover" Color="#FF1A1A1F" />
-        <SolidColorBrush x:Key="LineBrush" Color="#FF29292F" />
+        <SolidColorBrush x:Key="IslandBackground" Color="#FF050508" />
+        <SolidColorBrush x:Key="CardBackground" Color="#FF101013" />
+        <SolidColorBrush x:Key="CardHover" Color="#FF18181D" />
+        <SolidColorBrush x:Key="LineBrush" Color="#FF24242A" />
         <SolidColorBrush x:Key="TextPrimary" Color="#FFF4F4F6" />
         <SolidColorBrush x:Key="TextSecondary" Color="#FF8E8A93" />
         <SolidColorBrush x:Key="AccentBrush" Color="#FFFF8E5F" />
@@ -17,7 +17,7 @@
             <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="OverridesDefaultStyle" Value="True" />
             <Setter Property="IsTabStop" Value="False" />
-            <Setter Property="Background" Value="#FF050507" />
+            <Setter Property="Background" Value="Transparent" />
             <Setter Property="BorderThickness" Value="0" />
             <Setter Property="Padding" Value="0" />
             <Setter Property="Focusable" Value="False" />
@@ -26,9 +26,6 @@
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
                         <Grid Background="#00000000">
-                            <Path x:Name="NotchBody"
-                                  Fill="{TemplateBinding Background}"
-                                  Data="M 0,0 C 4.4,0 8,3.6 8,8 L 8,13 C 8,16.3 10.7,19 14,19 L 194,19 C 197.3,19 200,16.3 200,13 L 200,8 C 200,3.6 203.6,0 208,0 Z" />
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Grid>
                     </ControlTemplate>

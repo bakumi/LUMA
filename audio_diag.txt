@@ -1,0 +1,9 @@
+Role 0 (0=Console, 1=Media, 2=Comm): Головной телефон (AirPods Pro - bakumi - Find My Hands-Free AG Audio) [{0.0.1.00000000}.{cd0e510d-bcbe-417a-ab85-7a16521fd80a}]
+Role 1 (0=Console, 1=Media, 2=Comm): Головной телефон (AirPods Pro - bakumi - Find My Hands-Free AG Audio) [{0.0.1.00000000}.{cd0e510d-bcbe-417a-ab85-7a16521fd80a}]
+Role 2 (0=Console, 1=Media, 2=Comm): Головной телефон (AirPods Pro - bakumi - Find My Hands-Free AG Audio) [{0.0.1.00000000}.{cd0e510d-bcbe-417a-ab85-7a16521fd80a}]
+Total active capture devices: 1
+  [0] Головной телефон (AirPods Pro - bakumi - Find My Hands-Free AG Audio) ({0.0.1.00000000}.{cd0e510d-bcbe-417a-ab85-7a16521fd80a})
+      Activate IAudioClient hr=0x00000000
+      GetMixFormat hr=0x00000000, pFormat=1990885313056
+      Format: tag=0xFFFE, ch=1, rate=8000, bits=32
+      Calling client.Initialize...

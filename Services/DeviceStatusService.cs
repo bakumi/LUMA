@@ -69,4 +69,35 @@ public static class DeviceStatusService
             return false;
         }
     }
+
+    public static async Task<bool> ToggleWifiRadioAsync(bool enable)
+    {
+        try
+        {
+            var radios = await Windows.Devices.Radios.Radio.GetRadiosAsync();
+            var wifi = radios.FirstOrDefault(r => r.Kind == Windows.Devices.Radios.RadioKind.WiFi);
+            if (wifi != null)
+            {
+                var targetState = enable ? Windows.Devices.Radios.RadioState.On : Windows.Devices.Radios.RadioState.Off;
+                var res = await wifi.SetStateAsync(targetState);
+                return res == Windows.Devices.Radios.RadioAccessStatus.Allowed;
+            }
+        }
+        catch { }
+
+        try
+        {
+            var action = enable ? "enabled" : "disabled";
+            using var proc = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("netsh", $"interface set interface name=\"Wi-Fi\" admin={action}")
+            {
+                CreateNoWindow = true,
+                UseShellExecute = true
+            });
+            return true;
+        }
+        catch { }
+
+        return false;
+    }
 }
+
